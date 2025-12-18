@@ -36,7 +36,7 @@ tech-stack-fundamentals-cse24/
 ### Step 1: Clone Repository
 
 ```bash
-git clone https://github.com/SMILE-LABS/tech-stack-fundamentals-cse24.git
+git clone https://github.com/HimathX/tech-stack-fundamentals-cse24.git
 cd tech-stack-fundamentals-cse24
 ```
 
@@ -87,7 +87,7 @@ git push
 
 ```bash
 # Clone repository
-git clone https://github.com/SMILE-LABS/tech-stack-fundamentals-cse24.git
+git clone https://github.com/HimathX/tech-stack-fundamentals-cse24.git
 
 # Create submission folder
 cd "Task 01/submissions"
