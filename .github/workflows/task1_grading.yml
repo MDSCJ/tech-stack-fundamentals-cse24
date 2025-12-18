@@ -1,0 +1,682 @@
+name: 📊 Automated Grading - Portfolio Website (Task 01)
+
+# Trigger on every push to main/master
+on:
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - 'Task 01/submissions/**'  # Only trigger if submissions folder changes
+  pull_request:
+    branches:
+      - main
+      - master
+    paths:
+      - 'Task 01/submissions/**'
+  # Allow manual trigger from Actions tab
+  workflow_dispatch:
+
+permissions:
+    contents: write
+
+jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      changed-students: ${{ steps.detect.outputs.students }}
+      has-changes: ${{ steps.detect.outputs.has-changes }}
+    steps:
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 🔍 Detect changed submissions
+        id: detect
+        run: |
+          SUBMISSIONS_DIR="Task 01/submissions"
+          
+          if [ ! -d "$SUBMISSIONS_DIR" ]; then
+            echo "has-changes=false" >> $GITHUB_OUTPUT
+            echo "students=" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          # Get list of changed files
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            # Manual trigger - grade ALL submissions
+            echo "📌 Manual trigger detected - grading ALL submissions"
+            CHANGED_FILES=$(find "$SUBMISSIONS_DIR" -name "index.html" -type f)
+          elif [ "${{ github.event_name }}" == "pull_request" ]; then
+            # For PR, compare with base branch
+            CHANGED_FILES=$(git diff --name-only origin/${{ github.base_ref }}...HEAD)
+          else
+            # For push, compare with previous commit
+            if [ "${{ github.event.before }}" == "0000000000000000000000000000000000000000" ]; then
+              # Initial commit - grade all
+              CHANGED_FILES=$(find "$SUBMISSIONS_DIR" -name "index.html" -type f)
+            else
+              CHANGED_FILES=$(git diff --name-only ${{ github.event.before }} HEAD)
+            fi
+          fi
+          
+          # Extract student folders that changed
+          STUDENTS=$(echo "$CHANGED_FILES" | grep "Task 01/submissions/" | cut -d'/' -f3 | sort -u)
+          
+          if [ -z "$STUDENTS" ]; then
+            echo "ℹ️  No submissions changed"
+            echo "has-changes=false" >> $GITHUB_OUTPUT
+            echo "students=" >> $GITHUB_OUTPUT
+          else
+            echo "✅ Changed students:"
+            echo "$STUDENTS" | while read -r student; do
+              echo "  - $student"
+            done
+            echo "has-changes=true" >> $GITHUB_OUTPUT
+            echo "students<<EOF" >> $GITHUB_OUTPUT
+            echo "$STUDENTS" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+          fi
+
+  grade-submissions:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.has-changes == 'true'
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.PAT_TOKEN }}
+          persist-credentials: true
+
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: 🔍 Grade changed submissions only
+        run: |
+          python3 << 'EOF'
+          import os
+          import json
+          import re
+          
+          SUBMISSIONS_DIR = "Task 01/submissions"
+          CHANGED_STUDENTS = """${{ needs.detect-changes.outputs.changed-students }}""".strip().split('\n')
+          
+          print("🎯 Grading changed submissions only:")
+          print(f"Students to grade: {len(CHANGED_STUDENTS)}")
+          for student in CHANGED_STUDENTS:
+              print(f"  ✓ {student}")
+          print()
+          
+          def grade_submission(student_folder, index_file, style_file=None):
+              """Grade a single submission based on Portfolio Website requirements"""
+              
+              # Read HTML
+              with open(index_file, 'r', encoding='utf-8') as f:
+                  html_content = f.read()
+              
+              html_lower = html_content.lower()
+              
+              # Read CSS if exists
+              css_content = ""
+              if style_file and os.path.exists(style_file):
+                  with open(style_file, 'r', encoding='utf-8') as f:
+                      css_content = f.read()
+              
+              css_lower = css_content.lower()
+              
+              scores = {
+                  'file_structure': 0,
+                  'semantic_html': 0,
+                  'functionality': 0,
+                  'design': 0,
+                  'responsive': 0,
+                  'issues': []
+              }
+              
+              # ===== FILE STRUCTURE (10 points) =====
+              
+              # index.html exists (2 pts)
+              if os.path.exists(index_file):
+                  scores['file_structure'] += 2
+              else:
+                  scores['issues'].append('❌ Missing index.html')
+              
+              # style.css exists (2 pts)
+              if style_file and os.path.exists(style_file):
+                  scores['file_structure'] += 2
+              else:
+                  scores['issues'].append('⚠️ Missing style.css')
+              
+              # images folder with profile photo (3 pts)
+              images_path = os.path.dirname(index_file).replace('\\', '/') + '/images'
+              if os.path.exists(images_path):
+                  profile_files = [f for f in os.listdir(images_path) if f.lower() in ['profile.jpg', 'profile.png', 'profile.jpeg']]
+                  if profile_files:
+                      scores['file_structure'] += 3
+                  else:
+                      scores['issues'].append('⚠️ No profile photo in images/')
+              else:
+                  scores['issues'].append('❌ Missing images/ folder')
+              
+              # Meta tags present (3 pts)
+              if '<meta charset' in html_lower and 'viewport' in html_lower:
+                  scores['file_structure'] += 3
+              else:
+                  scores['issues'].append('⚠️ Missing meta tags')
+              
+              # ===== SEMANTIC HTML (20 points) =====
+              
+              # Navigation (4 pts)
+              if '<nav>' in html_lower:
+                  scores['semantic_html'] += 4
+              else:
+                  scores['issues'].append('❌ No <nav> tag')
+              
+              # Header (4 pts)
+              if '<header>' in html_lower:
+                  scores['semantic_html'] += 4
+              else:
+                  scores['issues'].append('❌ No <header> tag')
+              
+              # Main (4 pts)
+              if '<main>' in html_lower:
+                  scores['semantic_html'] += 4
+              else:
+                  scores['issues'].append('❌ No <main> tag')
+              
+              # Footer (2 pts)
+              if '<footer>' in html_lower:
+                  scores['semantic_html'] += 2
+              
+              # Section tags (3 pts)
+              section_count = html_lower.count('<section')
+              if section_count >= 3:
+                  scores['semantic_html'] += 3
+              elif section_count >= 1:
+                  scores['semantic_html'] += 1
+              
+              # Article tags for projects (3 pts)
+              if '<article' in html_lower:
+                  scores['semantic_html'] += 3
+              else:
+                  scores['issues'].append('⚠️ No <article> tags for projects')
+              
+              # ===== FUNCTIONALITY (25 points) =====
+              
+              # Anchor links work (5 pts)
+              anchor_links = re.findall(r'href=["\']#(\w+)["\']', html_lower)
+              section_ids = re.findall(r'<section[^>]*id=["\'](\w+)["\']', html_lower)
+              if len(anchor_links) >= 3 and len(section_ids) >= 3:
+                  scores['functionality'] += 5
+              else:
+                  scores['issues'].append('⚠️ Incomplete anchor navigation')
+              
+              # Forms with labels (6 pts)
+              if '<form>' in html_lower and '<label' in html_lower:
+                  label_count = html_lower.count('<label')
+                  if label_count >= 3:
+                      scores['functionality'] += 6
+                  else:
+                      scores['functionality'] += 3
+              else:
+                  scores['issues'].append('❌ No form or labels')
+              
+              # Input fields (4 pts)
+              if re.search(r'<input[^>]*type=["\'](?:text|email|number)', html_lower):
+                  input_count = len(re.findall(r'<input', html_lower))
+                  if input_count >= 3:
+                      scores['functionality'] += 4
+                  else:
+                      scores['functionality'] += 2
+              else:
+                  scores['issues'].append('⚠️ Limited input fields')
+              
+              # Details/summary tags (5 pts)
+              if '<details>' in html_lower and '<summary>' in html_lower:
+                  detail_count = html_lower.count('<details>')
+                  if detail_count >= 2:
+                      scores['functionality'] += 5
+              else:
+                  scores['issues'].append('⚠️ No details/summary (collapsible sections)')
+              
+              # Lists (ul/ol) (5 pts)
+              if '<ul>' in html_lower or '<ol>' in html_lower:
+                  list_count = html_lower.count('<ul>') + html_lower.count('<ol>')
+                  if list_count >= 2:
+                      scores['functionality'] += 5
+                  else:
+                      scores['functionality'] += 3
+              else:
+                  scores['issues'].append('❌ No lists (ul/ol)')
+              
+              # ===== DESIGN (25 points) =====
+              
+              # Custom CSS styling (8 pts)
+              if '<style>' in html_lower or os.path.exists(style_file or ''):
+                  css_rules = len(re.findall(r'[{]', css_content or ''))
+                  if css_rules >= 20:
+                      scores['design'] += 8
+                  elif css_rules >= 10:
+                      scores['design'] += 5
+                  else:
+                      scores['design'] += 2
+              else:
+                  scores['issues'].append('❌ No custom CSS styling')
+              
+              # Colors and gradients (5 pts)
+              if 'background' in css_lower or 'color' in css_lower:
+                  scores['design'] += 5
+              else:
+                  scores['issues'].append('⚠️ Minimal color styling')
+              
+              # Grid or Flexbox layout (7 pts)
+              if 'display: grid' in css_lower or 'display:grid' in css_lower:
+                  scores['design'] += 7
+              elif 'display: flex' in css_lower or 'display:flex' in css_lower:
+                  scores['design'] += 5
+              else:
+                  scores['issues'].append('⚠️ No grid/flex layout')
+              
+              # Hover effects (3 pts)
+              if ':hover' in css_lower:
+                  scores['design'] += 3
+              else:
+                  scores['issues'].append('⚠️ No hover effects')
+              
+              # Images with alt text (2 pts)
+              if '<img' in html_lower and 'alt=' in html_lower:
+                  scores['design'] += 2
+              else:
+                  scores['issues'].append('⚠️ Missing alt text on images')
+              
+              # ===== RESPONSIVE DESIGN (20 points) =====
+              
+              # Media queries (12 pts)
+              if '@media' in css_lower:
+                  media_count = css_lower.count('@media')
+                  if media_count >= 2:
+                      scores['responsive'] += 12
+                  else:
+                      scores['responsive'] += 6
+              else:
+                  scores['issues'].append('❌ No media queries - not responsive')
+              
+              # Mobile-friendly viewport (4 pts)
+              if 'viewport' in html_lower:
+                  scores['responsive'] += 4
+              
+              # Flexible units (4 pts)
+              if any(unit in css_lower for unit in ['%', 'rem', 'em', 'auto']):
+                  scores['responsive'] += 4
+              else:
+                  scores['issues'].append('⚠️ May use fixed pixel widths')
+              
+              return scores
+          
+          # Process ONLY changed submissions
+          results = []
+          
+          for student in CHANGED_STUDENTS:
+              if not student.strip():
+                  continue
+              
+              student_path = os.path.join(SUBMISSIONS_DIR, student.strip())
+              index_file = os.path.join(student_path, "index.html")
+              style_file = os.path.join(student_path, "style.css")
+              
+              if not os.path.exists(index_file):
+                  print(f"⚠️  {student}: Missing index.html")
+                  continue
+              
+              scores = grade_submission(student, index_file, style_file)
+              total = sum([
+                  scores['file_structure'],
+                  scores['semantic_html'],
+                  scores['functionality'],
+                  scores['design'],
+                  scores['responsive']
+              ])
+              
+              # Cap at 100
+              total = min(total, 100)
+              
+              # Determine grade
+              if total >= 90:
+                  grade = 'A'
+              elif total >= 80:
+                  grade = 'B'
+              elif total >= 70:
+                  grade = 'C'
+              elif total >= 60:
+                  grade = 'D'
+              else:
+                  grade = 'F'
+              
+              result = {
+                  'student': student.strip(),
+                  **scores,
+                  'total': total,
+                  'grade': grade
+              }
+              results.append(result)
+              
+              print(f"✅ {student}")
+              print(f"   Score: {total}/100 - Grade: {grade}")
+              if result['issues']:
+                  for issue in result['issues'][:3]:
+                      print(f"   {issue}")
+          
+          # Save results
+          with open('grading_results.json', 'w') as f:
+              json.dump(results, f, indent=2)
+          
+          # Print summary
+          print("\n" + "="*50)
+          print("📊 SUMMARY")
+          print("="*50)
+          print(f"Submissions graded: {len(results)}")
+          if results:
+              avg_score = sum(r['total'] for r in results) / len(results)
+              print(f"Average score: {avg_score:.1f}/100")
+              
+              for grade in ['A', 'B', 'C', 'D', 'F']:
+                  count = sum(1 for r in results if r['grade'] == grade)
+                  if count > 0:
+                      print(f"  {grade}: {count}")
+          
+          EOF
+
+      - name: 📄 Generate markdown report
+        if: always()
+        run: |
+          python3 << 'EOF'
+          import json
+          from datetime import datetime
+          
+          with open('grading_results.json', 'r') as f:
+              results = json.load(f)
+          
+          current_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+          avg_score = round(sum(r['total'] for r in results) / len(results), 1) if results else 0
+          
+          report = f"""# 📊 Portfolio Website - Grading Report (Changed Submissions)
+
+          Generated by GitHub Actions on: {current_date}
+
+          ## Summary
+
+          - **Submissions Graded:** {len(results)}
+          - **Average Score:** {avg_score}/100
+
+          ## Individual Results
+
+          """
+          
+          for result in sorted(results, key=lambda x: x['total'], reverse=True):
+              grade_emoji = {'A': '🎉', 'B': '👍', 'C': '👌', 'D': '⚠️', 'F': '❌'}
+              emoji = grade_emoji.get(result['grade'], '❓')
+              
+              report += f"""
+          ### {result['student']} - {emoji} {result['grade']} ({result['total']}/100)
+
+          | Category | Score |
+          |----------|-------|
+          | File Structure | {result['file_structure']}/10 |
+          | Semantic HTML | {result['semantic_html']}/20 |
+          | Functionality | {result['functionality']}/25 |
+          | Design | {result['design']}/25 |
+          | Responsive | {result['responsive']}/20 |
+          | **TOTAL** | **{result['total']}/100** |
+
+          """
+              
+              if result['issues']:
+                  report += "**Issues:**\n"
+                  for issue in result['issues']:
+                      report += f"- {issue}\n"
+                  report += "\n"
+          
+          with open('GRADING_REPORT.md', 'w') as f:
+              f.write(report)
+          
+          print("✅ Report generated: GRADING_REPORT.md")
+          EOF
+
+      - name: 🏆 Update README with Leaderboard
+        if: always()
+        run: |
+          python3 << 'EOF'
+          import json
+          from datetime import datetime
+          import os
+          
+          # Load current results
+          with open('grading_results.json', 'r') as f:
+              new_results = json.load(f)
+          
+          # Load existing leaderboard data if exists
+          leaderboard_file = "Task 01/leaderboard_data.json"
+          if os.path.exists(leaderboard_file):
+              with open(leaderboard_file, 'r') as f:
+                  all_results = json.load(f)
+          else:
+              all_results = {}
+          
+          # Update with new results
+          current_time = datetime.now().strftime("%Y-%m-%d %H:%M UTC")
+          for result in new_results:
+              student = result['student']
+              all_results[student] = {
+                  **result,
+                  'last_updated': current_time,
+                  'submission_count': all_results.get(student, {}).get('submission_count', 0) + 1
+              }
+          
+          # Save updated leaderboard data
+          with open(leaderboard_file, 'w') as f:
+              json.dump(all_results, f, indent=2)
+          
+          # Sort by: Score → Last Updated Time (earliest wins)
+          sorted_results = sorted(all_results.values(), key=lambda x: (
+              -x['total'],                    # Primary: Total score (descending)
+              x.get('last_updated', '9999'),  # Tiebreaker: Earlier submission wins (ascending)
+              x['student']                    # Last resort: Alphabetical
+          ))
+          
+          # Fun titles based on rank
+          def get_title(rank, grade):
+              if rank == 1:
+                  return "👑 Portfolio Legend"
+              elif rank == 2:
+                  return "🥈 Design Master"
+              elif rank == 3:
+                  return "🥉 Rising Designer"
+              elif grade == 'A':
+                  return "🌟 Portfolio Pro"
+              elif grade == 'B':
+                  return "💪 Skilled Developer"
+              elif grade == 'C':
+                  return "📈 Making Progress"
+              elif grade == 'D':
+                  return "🔧 Keep Pushing"
+              else:
+                  return "🚀 Just Getting Started"
+          
+          # Generate README
+          readme = """# 🏆 Portfolio Website Challenge - Live Leaderboard
+
+          > *"Your portfolio is your first impression in the tech world!"* 💼
+
+          ![Last Updated](https://img.shields.io/badge/Last%20Updated-""" + current_time.replace(" ", "%20").replace(":", "%3A") + """-blue)
+          ![Submissions](https://img.shields.io/badge/Submissions-""" + str(len(sorted_results)) + """-green)
+
+          ## 🎯 The Challenge
+          Build a professional portfolio website showcasing your skills, projects, and background using semantic HTML and responsive CSS!
+
+          ---
+
+          ## 🏅 Hall of Fame
+
+          """
+          
+          # Top 3 podium
+          if len(sorted_results) >= 1:
+              readme += "### 🥇 First Place\n"
+              r = sorted_results[0]
+              readme += f"**{r['student']}** - {r['total']}/100\n\n"
+          
+          if len(sorted_results) >= 2:
+              readme += "### 🥈 Second Place\n"
+              r = sorted_results[1]
+              readme += f"**{r['student']}** - {r['total']}/100\n\n"
+          
+          if len(sorted_results) >= 3:
+              readme += "### 🥉 Third Place\n"
+              r = sorted_results[2]
+              readme += f"**{r['student']}** - {r['total']}/100\n\n"
+          
+          readme += """---
+
+          ## 📊 Full Leaderboard
+
+          | Rank | Student | Score | Grade | Title | Last Updated |
+          |:----:|---------|:-----:|:-----:|-------|--------------|
+          """
+          
+          for i, result in enumerate(sorted_results, 1):
+              grade_emoji = {'A': '🔥', 'B': '✨', 'C': '👌', 'D': '📝', 'F': '🔨'}
+              emoji = grade_emoji.get(result['grade'], '❓')
+              title = get_title(i, result['grade'])
+              
+              # Medal for top 3
+              rank_display = {1: '🥇', 2: '🥈', 3: '🥉'}.get(i, str(i))
+              
+              readme += f"| {rank_display} | **{result['student']}** | {result['total']}/100 | {emoji} {result['grade']} | {title} | {result.get('last_updated', 'N/A')} |\n"
+          
+          readme += """
+          ---
+
+          ## 📈 Score Breakdown
+
+          | Category | Points | What We're Looking For |
+          |----------|:------:|------------------------|
+          | 📁 File Structure | 10 | index.html, style.css, images folder, meta tags |
+          | 🏗️ Semantic HTML | 20 | nav, header, main, footer, sections, articles |
+          | ⚡ Functionality | 25 | Navigation links, forms with labels, lists, collapsible sections |
+          | 🎨 Design | 25 | Custom CSS, colors, grid/flex layout, hover effects, images |
+          | 📱 Responsive | 20 | Media queries, mobile-friendly, flexible units |
+
+          ---
+
+          ## 🚀 Recent Activity
+
+          """
+          
+          # Show last 5 updates
+          recent = sorted(sorted_results, key=lambda x: x.get('last_updated', ''), reverse=True)[:5]
+          for r in recent:
+              readme += f"- **{r['student']}** updated their portfolio → {r['total']}/100 ({r.get('last_updated', 'N/A')})\n"
+          
+          readme += """
+          ---
+
+          ## 💡 Tips to Improve Your Score
+
+          1. **Use Semantic HTML** - nav, header, main, footer, section, article
+          2. **Create Proper Forms** - Don't forget label tags!
+          3. **Add CSS Grid** - Use display: grid for modern layout
+          4. **Make it Responsive** - Add @media queries for mobile
+          5. **Show your Profile Photo** - Use proper img tags with alt text
+          6. **Add Hover Effects** - CSS :hover makes it interactive
+          7. **Use Lists Correctly** - Use ul and li for organized content
+          8. **Collapsible Sections** - Try details and summary tags
+
+          ---
+
+          <p align="center">
+            <i>🤖 Auto-graded by GitHub Actions | Build your best portfolio! 🌟</i>
+          </p>
+          """
+          
+          with open('Task 01/README.md', 'w') as f:
+              f.write(readme)
+          
+          print("✅ README.md updated with leaderboard!")
+          EOF
+
+      - name: 📤 Commit and Push README
+        if: github.event_name != 'pull_request' && always()
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git remote set-url origin https://x-access-token:${{ secrets.PAT_TOKEN }}@github.com/${{ github.repository }}.git
+          git add "Task 01/README.md" "Task 01/leaderboard_data.json"
+          git diff --staged --quiet || git commit -m "🏆 Update leaderboard - $(date +'%Y-%m-%d %H:%M')"
+          git push
+        env:
+          PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
+
+      - name: 📦 Upload grading results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: grading-results-changed
+          path: |
+            grading_results.json
+            GRADING_REPORT.md
+
+      - name: 💬 Comment on PR with results
+        if: github.event_name == 'pull_request' && always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const results = JSON.parse(fs.readFileSync('grading_results.json', 'utf8'));
+            
+            let comment = '# 📊 Grading Results (Changed Submissions Only)\n\n';
+            comment += `- **Submissions Graded:** ${results.length}\n`;
+            
+            if (results.length > 0) {
+              const avg = (results.reduce((sum, r) => sum + r.total, 0) / results.length).toFixed(1);
+              comment += `- **Average Score:** ${avg}/100\n\n`;
+              
+              comment += '### Results:\n\n';
+              results.forEach(r => {
+                const emoji = {'A': '🎉', 'B': '👍', 'C': '👌', 'D': '⚠️', 'F': '❌'}[r.grade] || '❓';
+                comment += `- **${r.student}**: ${emoji} ${r.grade} (${r.total}/100)\n`;
+              });
+            }
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+
+      - name: 📈 Create job summary
+        if: always()
+        run: |
+          cat >> $GITHUB_STEP_SUMMARY << 'EOF'
+          # 📊 Grading Complete (Changed Submissions)
+          
+          ✅ Only changed submissions were graded
+          📄 Report generated
+          📦 Results available as artifact
+          EOF
+
+  no-changes:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.has-changes == 'false'
+    runs-on: ubuntu-latest
+    steps:
+      - name: ℹ️ No changes detected
+        run: |
+          echo "ℹ️  No submissions were changed in this push"
+          echo "Skipping grading workflow"
