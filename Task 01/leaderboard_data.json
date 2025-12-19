@@ -151,5 +151,23 @@
     "grade": "F",
     "last_updated": "2025-12-19 06:47 UTC",
     "submission_count": 1
+  },
+  "Dihini": {
+    "student": "Dihini",
+    "file_structure": 7,
+    "semantic_html": 12,
+    "functionality": 23,
+    "design": 23,
+    "responsive": 8,
+    "issues": [
+      "\u26a0\ufe0f No profile photo in images/",
+      "\u274c No <nav> tag",
+      "\u274c No <header> tag",
+      "\u274c No media queries - not responsive"
+    ],
+    "total": 73,
+    "grade": "C",
+    "last_updated": "2025-12-19 07:21 UTC",
+    "submission_count": 1
   }
 }
